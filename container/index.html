@@ -1,0 +1,221 @@
+<html>
+
+<body>
+  <div id = "viewer">
+    <style>
+        .textLayer {
+          position: absolute;
+          left: 0;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          color: #000;
+          font-family: sans-serif;
+        }
+
+        .textLayer > div {
+          color: transparent;
+          position: absolute;
+          white-space:pre;
+        }
+        ::selection { background:rgba(0,0,255,0.3); }
+        ::-moz-selection { background:rgba(0,0,255,0.3); }
+    </style>
+  </div>
+  <div id="loading"></div>
+
+  <!-- Use latest PDF.js build from Github -->
+  <script type="text/javascript" src="compatibility.js"></script>
+  <script type="text/javascript" src="pdf.js"></script>
+  <script type="text/javascript" src="ui_utils.js"></script>
+  <script type="text/javascript" src="text_layer_builder.js"></script>
+  <script type="text/javascript" src="jquery.js"></script>
+  <script type="text/javascript">
+    function queryObj() {
+        var result = {}, keyValuePairs = location.search.slice(1).split('&');
+
+        keyValuePairs.forEach(function(keyValuePair) {
+            keyValuePair = keyValuePair.split('=');
+            result[keyValuePair[0]] = keyValuePair[1] || '';
+        });
+
+        return result;
+    }
+
+    var query = queryObj(),
+      url = query['file'],
+      max_width = query['width'] ? query['width'] : '1024';
+
+    // disable worker
+    PDFJS.disableWorker = true;
+
+    var pdfDoc = null,
+        pageNum = 1,
+        container = jQuery("#viewer"),
+        done = [];
+
+    function renderPage(num) {
+      done[num] = false;
+      pdfDoc.getPage(num).then(function(page) {
+        var slide_width = page.view[2],
+            scale = max_width / slide_width,
+            viewport = page.getViewport(scale);
+        var $canvas = jQuery("<canvas id='page" + num + "'></canvas>");
+
+        //Set the canvas height and width to the height and width of the viewport
+        var canvas = $canvas.get(0);
+        var context = canvas.getContext("2d");
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        //Append the canvas to the pdf container div
+        var $pdfContainer = jQuery("<div id='pageContainer" + num + "'></div>")
+          .addClass("page");
+        $pdfContainer.css("height", canvas.height + "px").css("width", canvas.width + "px");
+        $pdfContainer.append($canvas);
+        container.append($pdfContainer);
+
+        var canvasOffset = $canvas.offset();
+        var $textLayerDiv = jQuery("<div />")
+            .addClass("textLayer")
+            .css("height", viewport.height + "px")
+            .css("width", viewport.width + "px")
+            .offset({
+                top: canvasOffset.top,
+                left: canvasOffset.left
+            });
+
+        $pdfContainer.append($textLayerDiv);
+
+        page.getTextContent().then(function (textContent) {
+
+            var textLayer = new TextLayerBuilder({
+                textLayerDiv: $textLayerDiv.get(0),
+                pageIndex: 0,
+                viewport: viewport,
+            });
+
+            textLayer.setTextContent(textContent);
+
+            var renderContext = {
+                canvasContext: context,
+                viewport: viewport,
+                textLayer: textLayer
+            };
+
+            var renderTask = page.render(renderContext);
+            renderTask.promise.then(
+              function pdfPageRenderCallback() {
+                done[num] = true;
+              },
+              function pdfPageRenderError(error) {
+                console.log("Error" + error);
+              }
+            );
+        });
+      });
+    }
+
+    //
+    // Go to previous page
+    //
+    function goPrevious() {
+      if (pageNum <= 1)
+        return;
+      pageNum--;
+      $('#pageContainer' + pageNum).show();
+    }
+
+    //
+    // Go to next page
+    //
+    function goNext() {
+      if (pageNum >= pdfDoc.numPages)
+        return;
+      $('#pageContainer' + pageNum).remove();
+      pageNum++;
+      gotoPage(pageNum);
+    }
+
+    function gotoPage(page) {
+      $('#loading').show();
+
+      // destroy resources of the previous page
+      if (page > 1) {
+        pdfDoc.cleanup();
+      }
+
+      renderPage(page);
+
+      // wait for all pages to finish rendering
+      function _done() {
+        if (!done[page]) {
+          setTimeout(function() { _done(); }, 1000);
+        } else {
+          console.log('Slide ' + page + ' is done rendering');
+          $('#loading').hide();
+          $('#pageContainer' + page).show();
+        }
+      };
+      setTimeout(function() { _done(); }, 1000);
+    }
+
+    //
+    // Asynchronously download PDF as an ArrayBuffer
+    //
+    PDFJS.getDocument(url).then(function getPdfHelloWorld(_pdfDoc) {
+      pdfDoc = _pdfDoc;
+
+      gotoPage(pageNum);
+    });
+
+    function extract()
+    {
+        // remove data- attributes from textLayer
+        $('.page:visible').find('.textLayer').find('div').removeAttrs();
+
+        // recalculate font-size as a data attribute
+        var canvas_width = $('.page:visible').width(),
+            canvas_height = $('.page:visible').height();
+        $('.page:visible .textLayer div').each(function() {
+          var font_size = $(this).css('font-size').replace('px', ''),
+              font_size = parseFloat(font_size / canvas_height * 100).toFixed(2);
+          $(this).attr('data-font-size', font_size);
+          $(this).css('font-size', '');
+          $(this).css('font-family', '');
+
+          var left = $(this).css('left').replace('px', ''),
+              top = $(this).css('top').replace('px', '')
+              left = parseFloat(left / canvas_width * 100).toFixed(2) + '%',
+              top = parseFloat(top / canvas_height * 100).toFixed(2) + '%';
+          $(this).css('left', left);
+          $(this).css('top', top);
+        });
+
+        var html = $('.page:visible').find('.textLayer').html();
+        var canvas = $('.page:visible canvas')[0];
+        var dataURL = canvas.toDataURL('image/jpeg', '0.7');
+
+        var result = {slide: dataURL, html: html}
+
+        return result;
+    }
+
+    $.fn.removeAttrs = function() {
+        return this.each(function() {
+            var data = $(this).data(),
+                i;
+            // Fetch all the key-names
+            var keys = $.map(data , function(value, key) { return key; });
+            // Loop through the keys, remove the attribute if the key contains "lorem".
+            for(i = 0; i < keys.length; i++) {
+              var key = keys[i].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+                    $(this).removeAttr("data-" + key);
+            }
+        });
+    };
+
+  </script>
+</body>
+</html>
+
